@@ -6,6 +6,8 @@ library(anytime)
 library(dplyr)
 library(stringr)
 library(xml2)
+library(lubridate)
+library(assertthat)
 
 
 
@@ -116,18 +118,20 @@ get_bulk_tx_data_js <- function(condition, offset_start, n_batches, max_tries, b
   
   # params
   # condition <- this_condition
-  # offset_start <- 100 # if you want to start with a specific offset
+  # offset_start <- 0 # if you want to start with a specific offset
   # n_batches <- 3 # number of successful iterations of get_tx_data_js
   # max_tries <- 2 # number of tries of the same get_tx_data_js before giving up
-  # batch_size <- 1000
+  # batch_size <- 100
   # timeout <- 10e3
+  # network <- "ethereum-mainnet"
+  # condition <- paste0("%22sourceNetworkName%22%3A%22", network, "%22")
   
   # init
   tx_data_agg <- NULL
   tx_data_tokenAmounts_agg <- NULL
   error_log <- NULL
-  # network <- "ethereum-mainnet"
-  # condition <- paste0("%22sourceNetworkName%22%3A%22", network, "%22")
+  overlap <- 10 # offset might not be perfect so better have calls overlap a bit
+
   
   # loop on batches
   for(i in c(1:n_batches)){
@@ -141,7 +145,7 @@ get_bulk_tx_data_js <- function(condition, offset_start, n_batches, max_tries, b
       
       # get tx_data_js
       print(paste0("calling ccip explorer api for a batch size of (transactions): ", batch_size))
-      tx_data_js <- get_tx_data_js(batch_size, offset = (i-1)*batch_size + offset_start, condition, timeout)
+      tx_data_js <- get_tx_data_js(batch_size, offset = max((i-1)*batch_size + offset_start - overlap, 0), condition, timeout)
       tx_data_js_error_status <- tx_data_js$status_code
       if(tx_data_js_error_status == 200){ 
          if(length(content(tx_data_js$data)$data$allCcipTransactionsFlats$nodes) == 0){tx_data_js_error_status <- "no_data"}
@@ -154,6 +158,13 @@ get_bulk_tx_data_js <- function(condition, offset_start, n_batches, max_tries, b
         
         this_tx_data <- tx_data_js_to_dataframe(tx_data_js$data)
         this_tx_data$tx_data <- this_tx_data$tx_data # %>% mutate(batch_num = this_batch_num, .before = "transactionHash")
+        
+        # todel # # ## ###
+        # first_batch <- as.data.table(this_tx_data$tx_data)
+        # second_batch <- as.data.table(this_tx_data$tx_data)
+        # ## ## ## ##
+        
+        
         tx_data_agg <- tx_data_agg %>% rbind(this_tx_data$tx_data)
         tx_data_tokenAmounts_agg <- tx_data_tokenAmounts_agg %>% rbind(this_tx_data$tx_data_tokenAmounts)
         
@@ -251,6 +262,7 @@ get_targetDate_sourceNetwork_bulk_tx_data_js <- function(target_date, max_getbul
   # loop on i (will call get_sourceNetwork_bulk_tx_data_js until reaching target_date)
   target_reached <- FALSE 
   bulk_tx_data_js <- NULL
+  overlap <- 5 # offset might not be perfect so better have calls overlap a bit
   i <- 1
   while(target_reached == FALSE){
     
@@ -259,7 +271,7 @@ get_targetDate_sourceNetwork_bulk_tx_data_js <- function(target_date, max_getbul
     tokenamount <- NULL
     
     # get bulk data
-    this_bulk_tx_data_js <- get_sourceNetwork_bulk_tx_data_js(sourceNetwork, offset_start = (i-1)*batch_size*n_batches + offset_start, n_batches, max_tries, batch_size, timeout)
+    this_bulk_tx_data_js <- get_sourceNetwork_bulk_tx_data_js(sourceNetwork, offset_start = max((i-1)*batch_size*n_batches + offset_start - overlap, 0), n_batches, max_tries, batch_size, timeout)
     
     this_bulk_num <- i
     if(!is.null(this_bulk_tx_data_js$tx_data)){
@@ -376,19 +388,15 @@ readcsv_clean <- function(fpath){
   
 }
 
-
-
-# functions - get_data ------------------------------------------------------
-
-get_networks_lasttimestampudate <- function(networks){
-
+get_networks_last_timestamp_update <- function(networks){
+  
   # networks = c(
   #   'ethereum-mainnet', 'avalanche-mainnet', 'binance_smart_chain-mainnet',
   #   'ethereum-mainnet-arbitrum-1', 'ethereum-mainnet-optimism-1',
   #   'ethereum-mainnet-base-1', 'polygon-mainnet', 'wemix-mainnet',
   #   'ethereum-mainnet-kroma-1'
   # )
-
+  
   # init
   res <- NULL
   timestamp_last_tx_data <- NULL
@@ -398,7 +406,7 @@ get_networks_lasttimestampudate <- function(networks){
     # i=1
     
     # init
-    this_timestamp_last_tx_data <- "no_tx_data"
+    this_timestamp_last_tx_data <- NA
     
     # SourceNetwork
     this_network <- networks[i]
@@ -412,7 +420,7 @@ get_networks_lasttimestampudate <- function(networks){
     }
     
     timestamp_last_tx_data[i] <- this_timestamp_last_tx_data
-
+    
   }
   
   res$network <- networks
@@ -423,19 +431,28 @@ get_networks_lasttimestampudate <- function(networks){
 }
 
 
+# functions - get_data ------------------------------------------------------
+
+
+
 # get_tx_data_networks_targetdates <- function(networks, targetdates){
   
 
-# Networks
+# params
 networks = c(
   'ethereum-mainnet', 'avalanche-mainnet', 'binance_smart_chain-mainnet',
   'ethereum-mainnet-arbitrum-1', 'ethereum-mainnet-optimism-1',
   'ethereum-mainnet-base-1', 'polygon-mainnet', 'wemix-mainnet',
   'ethereum-mainnet-kroma-1'
 )
+targetdates <- as.Date(str_sub(get_networks_last_timestamp_update(networks)$timestamp_last_tx_data, 1, 10))
 
-# params target date
-target_date <- as.Date("2024-04-10") # as.Date("2023-06-22") # initial date when CCIP was created
+
+# check params
+assert_that(length(networks) == length(targetdates), msg = paste0("networks vector and targetdates vector should be same length"))
+assert_that(is.Date(targetdates), msg = paste0("targetdates vector should only contain dates"))
+
+# max_getbulkdata_calls
 max_getbulkdata_calls <- Inf # in case something goes wrong with the while loop, will stop calling get_sourceNetwork_bulk_tx_data_js
 
 # params get_sourceNetwork_bulk_tx_data_js
@@ -453,6 +470,10 @@ for (i in c(1:(length(networks)))){
   # SourceNetwork
   this_network <- networks[i]
   # this_network <- "lala"
+  
+  # Target date
+  target_date <- as.Date(targetdates[i])
+  if(is.na(target_date)){target_date <-  as.Date("2023-06-01")} # initial date when CCIP was created
   
   # get tx_data for source 
   this_network_tx_data <- get_targetDate_sourceNetwork_bulk_tx_data_js(target_date, max_getbulkdata_calls, this_network, offset_start, n_batches, max_tries, batch_size, timeout)
